@@ -1,0 +1,33 @@
+{
+  "name": "sift-data",
+  "version": "0.2.0",
+  "description": "Audit, clean and gate any spreadsheet — without uploading it anywhere.",
+  "keywords": ["data-quality", "csv", "data-contracts", "pipeline", "etl", "cli", "pii"],
+  "homepage": "https://piyushs-2004.github.io/sift/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/piyushs-2004/sift.git"
+  },
+  "bugs": {
+    "url": "https://github.com/piyushs-2004/sift/issues"
+  },
+  "license": "MIT",
+  "bin": {
+    "sift": "bin/sift.js",
+    "sift-data": "bin/sift.js"
+  },
+  "main": "lib/core.js",
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "CLI.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "test": "node test/test.js"
+  }
+}

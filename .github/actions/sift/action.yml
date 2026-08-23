@@ -1,0 +1,54 @@
+name: 'Sift'
+description: 'Data quality gate for pipelines — profile or check files against a contract.'
+author: 'piyushs-2004'
+
+inputs:
+  files:
+    description: 'File glob(s) to check, comma separated'
+    required: true
+  contract:
+    description: 'Path to a contract JSON file. Omit to run "profile" instead of "check".'
+    required: false
+    default: ''
+  max-age:
+    description: 'Fail if the newest file is older than this (e.g. 6h, 2d, 1w)'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Minimum severity that fails the job: critical | warning | info | none'
+    required: false
+    default: 'critical'
+  comment:
+    description: 'Post the results as a PR comment'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      run: |
+        set +e
+        node "${{ github.action_path }}/../../../bin/sift.js" \
+          $( [ -n "${{ inputs.contract }}" ] && echo "check" || echo "profile" ) \
+          ${{ inputs.files }} \
+          $( [ -n "${{ inputs.contract }}" ] && echo "-c ${{ inputs.contract }}" ) \
+          $( [ -n "${{ inputs.max-age }}" ] && echo "--max-age ${{ inputs.max-age }}" ) \
+          --fail-on "${{ inputs.fail-on }}" \
+          -f markdown -o sift-report.md
+        code=$?
+        cat sift-report.md >> "$GITHUB_STEP_SUMMARY"
+        exit $code
+
+    - if: always() && inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync('sift-report.md', 'utf8');
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body,
+          });
