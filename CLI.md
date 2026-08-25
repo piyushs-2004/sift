@@ -82,6 +82,78 @@ sift check orders.csv -c contracts/orders.json --max-age 24h
 
 Accepts `30m`, `6h`, `2d`, `1w`.
 
+## SLA and trend checks
+
+`--max-age` catches a file that's stale relative to *now*. These catch a file that's off
+relative to its own history:
+
+```bash
+sift check orders.csv -c contracts/orders.json \
+  --sla "06:00+05:30" \
+  --track history/orders.json --row-deviation 25 --no-regression
+```
+
+`--sla` fails if the file's mtime is past a daily deadline (timezone optional, defaults to
+UTC). `--track` appends each run's row count and quality score to a small JSON log, which
+unlocks two checks a single-snapshot contract can't make: `--row-deviation` compares today's
+row count against the *rolling average* of recent runs instead of one frozen baseline, and
+`--no-regression` fails if the quality score dropped versus the last passing run — so a file
+that's slightly worse every day, but never bad enough to trip any one rule, still gets caught.
+
+Both need a few runs of history before they have anything to compare against; with fewer
+than 3 tracked runs `--row-deviation` is a no-op.
+
+## Business rules
+
+Some checks aren't about a column in isolation — they're "if this, then that":
+
+```bash
+sift check orders.csv -c contracts/orders.json \
+  --conditional "status=refunded:refund_amount.not_null" \
+  --conditional "country=IN|NP:currency.INR"
+```
+
+Format is `when_col=value[|value2...]:then_col.check`, where `check` is `not_null` or a
+value (or `|`-separated set) the then-column must equal. Declared the same way in a
+contract's `rules.conditional`:
+
+```json
+"conditional": [
+  { "when": { "column": "status", "equals": "refunded" },
+    "then": { "column": "refund_amount", "not_null": true } }
+]
+```
+
+Violating rows get flagged the same way a `--quarantine` split would, with the rule that
+failed named in the reason.
+
+## Value drift
+
+A column can be perfectly typed, fully populated, and still be wrong — a currency
+conversion bug or a unit change shifts every value by the same factor and passes every
+check above it:
+
+```bash
+sift check orders.csv -c contracts/orders.json --deviation "amount=30,quantity=50"
+```
+
+Fails if a numeric column's average moves more than that percent from the baseline
+recorded when the contract was frozen. `--deviation-tolerance <pct>` sets the same
+threshold as a default for every numeric column instead of naming each one.
+
+## Severity gates
+
+Override how a specific check code behaves, without touching the rule that produces it:
+
+```bash
+sift check orders.csv -c contracts/orders.json --gate "sla_breach=info,empty_file=off"
+```
+
+Comma-separated `code=severity` pairs; `severity` is `critical`, `warning`, `info`, or
+`off` to drop it entirely. Everything not named keeps its default behavior. Useful for a
+known, accepted gap — a `sla_breach` that's genuinely fine to run late on weekends,
+say — without weakening the check for everyone else who hits it.
+
 ## One command for a whole project
 
 ```bash
@@ -145,6 +217,13 @@ docker run --rm -v "$PWD:/work" sift check data/orders.csv -c contracts/orders.j
 | `row_count_drop` | Row count fell beyond tolerance — usually a broken extract |
 | `duplicates_exceeded` | Duplicate rows above the allowance |
 | `unexpected_pii` | A column now looks like personal data and wasn't declared as such |
+| `composite_uniqueness_lost` | A declared column combo (`unique_together`) now repeats |
+| `value_deviation` | A numeric column's average moved beyond `--deviation`'s allowance |
+| `conditional_rule_violated` | A declared when/then business rule failed on some rows |
+| `sla_breach` | The file arrived after its `--sla` deadline |
+| `row_count_deviation` | Row count moved beyond `--row-deviation` from the rolling average |
+| `quality_regression` | Quality score dropped vs. the last passing tracked run |
+| `empty_file` | File has zero data rows (critical unless `--allow-empty`) |
 
 Type checking widens rather than pins: a column declared `decimal` accepts `integer`, and
 anything accepts `empty`. It fails when a number becomes a string, not when 4 becomes 4.0.
@@ -236,8 +315,21 @@ Commit the rules file. It's the record of what your team decided, reviewable in 
 | `description` | Free text, carried into the contract for reviewers |
 
 Global keys under `rules`: `allow_new_columns`, `allow_missing_columns`,
-`max_row_drop_pct`, `max_duplicate_pct`, `min_rows`.
+`max_row_drop_pct`, `max_duplicate_pct`, `min_rows`, `allow_empty`, `unique_together`,
+`value_deviation_pct`, `row_deviation_pct`, `conditional`, `sla`, `no_regression`, `gates`.
 Under `defaults`, `required` accepts `infer` (default), `all`, or `none`.
+
+### Composite keys
+
+A single column can be unique on its own and still not be the real key — `order_id` might
+repeat across regions while `(order_id, region)` never does:
+
+```bash
+sift contract orders.csv --unique-together "order_id,region" -o contracts/orders.json
+```
+
+Repeatable for more than one combination. Unlike per-column `unique`, composite keys are
+never inferred — declare the ones that matter.
 
 ### Regenerating without losing your work
 
@@ -418,6 +510,14 @@ check:
     --row-tolerance <%> Allowed row-count drop (default: 30)
     --strict-columns    Reject new columns
     --max-rows <n>      Stop after n rows
+    --unique-together "a,b"  Composite key across columns (repeatable)
+    --deviation "a=30"  Fail if column a's average drifts >30% from baseline
+    --conditional <spec> When/then business rule, e.g. "status=refunded:refund_amount.not_null"
+    --sla <time[tz]>    Fail if the file arrived after this time
+    --track <path>      Log row count + score to a history file
+    --row-deviation <%> Fail if row count strays from the rolling average (needs --track)
+    --no-regression     Fail if quality score dropped vs. last pass (needs --track)
+    --gate <overrides>  Remap or silence a check code, e.g. "sla_breach=info"
 -q, --quiet             Print only on failure
 ```
 
