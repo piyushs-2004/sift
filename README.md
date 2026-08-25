@@ -111,7 +111,7 @@ free-text notes. First pass, not a compliance review.
 ```bash
 git clone https://github.com/piyushs-2004/sift.git
 cd sift
-npm test          # 85 tests, no framework, no dependencies
+npm test          # 182 tests, no framework, no dependencies
 node bin/sift.js --help
 ```
 

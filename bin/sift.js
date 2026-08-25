@@ -54,14 +54,40 @@ Contract authoring
       --range "amt=0:1e6" Numeric bounds
       --require-all       Default every column to required
       --require-none      Default every column to optional
+      --unique-together "a,b"  Composite key: this column combo must be unique
+                          (repeatable for more than one combination)
+      --allow-empty       A file with zero data rows is expected, not an error
+      --deviation "a=30"  Flag if a numeric column's average moves more than
+                          this percent from the baseline (catches unit/scale bugs)
+      --deviation-tolerance <pct>  Same, as a default for every numeric column
 
 Enforcement
   -c, --contract <path>   Contract to validate against
       --fail-on <sev>     critical | warning | info | none  (default critical)
       --max-age <dur>     Fail if the file is older than e.g. 6h, 2d, 1w
+      --track <path>      Log each run's row count to a history file
+      --row-deviation <%> Fail if row count deviates from the rolling
+                          average by more than this percent (needs --track)
+      --sla <time[tz]>   Fail if the file arrived after this time, e.g.
+                          "06:00" or "06:00+05:30" for IST
+      --no-regression     Fail if quality score dropped vs last passing run
+                          (needs --track)
+      --gate <overrides>  Override severity per check code. Comma-separated.
+                          Values: critical, warning, info, off
+                          e.g. "sla_breach=info,empty_file=off"
+                          Default behaviour is unchanged for every code.
+      --conditional <spec> Business logic rule, repeatable. Format:
+                          "col=val:other_col.not_null"
+                          "status=refunded:refund_amount.not_null"
+                          "country=IN|NP:currency.INR"
       --quarantine <path> Write offending rows here, with a reason column
       --pass-out <path>   Write the rows that passed here
-      --webhook <url>     POST the result as JSON on failure
+      --webhook <url>     POST the result on failure — Slack, Teams, Discord,
+                          PagerDuty, or generic JSON, auto-detected from the URL
+      --webhook-key <k>   Routing/integration key some platforms need
+                          (e.g. PagerDuty). Also read from SIFT_WEBHOOK_KEY.
+      --alert-on <sev>    Severity that triggers the webhook (default: --fail-on)
+      --alert-always      Also send a heartbeat ping when everything passes
       --exit-zero         Always exit 0; report only
 
 Output
@@ -107,13 +133,70 @@ function args(argv) {
     else if (a === '--only') o.only = String(argv[++i]).split(',');
     else if (a === '--fail-on') o.failOn = argv[++i];
     else if (a === '--max-age') o.maxAge = argv[++i];
+    else if (a === '--track') o.track = argv[++i];
+    else if (a === '--row-deviation') o.rowDeviation = +argv[++i];
+    else if (a === '--sla') {
+      var slaVal = argv[++i];
+      var slaParts = slaVal.split(/(?=[+-])/);
+      o.sla = { by: slaParts[0] };
+      if (slaParts[1]) o.sla.timezone = slaParts[1];
+    }
+    else if (a === '--no-regression') o.noRegression = true;
+    else if (a === '--gate') {
+      // --gate "sla_breach=info,row_count_deviation=warning,empty_file=off"
+      o.declared.rules.gates = o.declared.rules.gates || {};
+      String(argv[++i]).split(',').forEach(function (pair) {
+        var kv = pair.split('=');
+        if (kv.length === 2) o.declared.rules.gates[kv[0].trim()] = kv[1].trim();
+      });
+    }
+    else if (a === '--conditional') {
+      // --conditional "status=refunded:refund_amount.not_null"
+      var cond = String(argv[++i]);
+      var cp = cond.split(':');
+      if (cp.length === 2) {
+        var whenParts = cp[0].split('='), thenParts = cp[1].split('.');
+        var whenSpec = { column: whenParts[0] };
+        if (whenParts[1]) {
+          if (whenParts[1].indexOf('|') >= 0) whenSpec.in = whenParts[1].split('|');
+          else whenSpec.equals = whenParts[1];
+        } else whenSpec.not_null = true;
+        var thenSpec = { column: thenParts[0] };
+        if (thenParts[1] === 'not_null') thenSpec.not_null = true;
+        else if (thenParts[1]) {
+          if (thenParts[1].indexOf('|') >= 0) thenSpec.in = thenParts[1].split('|');
+          else thenSpec.equals = thenParts[1];
+        }
+        o.declared.rules.conditional = o.declared.rules.conditional || [];
+        o.declared.rules.conditional.push({ when: whenSpec, then: thenSpec });
+      }
+    }
     else if (a === '--quarantine') o.quarantine = argv[++i];
     else if (a === '--pass-out') o.passOut = argv[++i];
     else if (a === '--webhook') o.webhook = argv[++i];
+    else if (a === '--webhook-key') o.webhookKey = argv[++i];
+    else if (a === '--alert-on') o.alertOn = argv[++i];
+    else if (a === '--alert-always') o.alertAlways = true;
     else if (a === '--exit-zero') o.exitZero = true;
     else if (a === '--tolerance') o.tolerance = +argv[++i];
     else if (a === '--row-tolerance') o.rowTolerance = +argv[++i];
     else if (a === '--min-rows') o.declared.rules.min_rows = +argv[++i];
+    else if (a === '--unique-together') {
+      // repeatable: --unique-together "order_id,region" --unique-together "user_id,day"
+      var cols = String(argv[++i]).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      if (cols.length > 1) {
+        o.declared.rules.unique_together = o.declared.rules.unique_together || [];
+        o.declared.rules.unique_together.push(cols);
+      }
+    }
+    else if (a === '--allow-empty') o.declared.rules.allow_empty = true;
+    else if (a === '--deviation-tolerance') o.declared.rules.value_deviation_pct = +argv[++i];
+    else if (a === '--deviation') {
+      // --deviation "amount=30,quantity=50"
+      String(argv[++i]).split(',').forEach(function (pair) {
+        var kv = pair.split('='); if (kv.length === 2) mark(kv[0], 'max_mean_deviation_pct', +kv[1]);
+      });
+    }
     else if (a === '--strict-columns') o.strictColumns = true;
     else if (a === '--required') mark(argv[++i], 'required', true);
     else if (a === '--optional') mark(argv[++i], 'required', false);
@@ -197,7 +280,10 @@ function profileFile(file, o, done) {
 
   reader.readRows(file, o.read || {}, {
     onHeader: function (f) {
-      acc = new pipe.Accumulator(filterFields(f, o));
+      acc = new pipe.Accumulator(filterFields(f, o), {
+        compositeKeys: o.compositeKeys || [],
+        conditionalRules: o.conditionalRules || []
+      });
       acc.estTotal = estTotal;
     },
     onRow: function (row, i) { acc.push(row, i); },
@@ -291,6 +377,20 @@ function printProfile(file, p, list, sc) {
 function cmdContract(o) {
   var file = o._[0];
   if (!file) usage(2);
+
+  // Read any existing contract FIRST — its declared rules (including
+  // unique_together) must be known before profiling starts, because
+  // composite-key tracking has to be told which column combinations to
+  // watch while the file streams past, not after.
+  if (o.contract) {
+    try {
+      var prev = JSON.parse(fs.readFileSync(o.contract, 'utf8'));
+      o.carry = prev.declared || null;
+    } catch (e2) { die('Cannot read existing contract: ' + e2.message); }
+  }
+  var declaredSoFar = collectDeclared(o);
+  o.compositeKeys = (declaredSoFar.rules && declaredSoFar.rules.unique_together) || [];
+
   profileFile(file, o, function (e, p) {
     if (e) die('Cannot read ' + file + ': ' + e.message);
     if (o.emitRules) {
@@ -302,18 +402,13 @@ function cmdContract(o) {
       }
       return;
     }
-    if (o.contract) {
-      try {
-        var prev = JSON.parse(fs.readFileSync(o.contract, 'utf8'));
-        o.carry = prev.declared || null;
-        if (!o.quiet && o.carry && o.carry.columns)
-          console.log(C.dim + '  Carrying forward ' + Object.keys(o.carry.columns).length +
-            ' declared column rule(s) from ' + path.basename(o.contract) + C.off);
-      } catch (e2) { die('Cannot read existing contract: ' + e2.message); }
-    }
+    if (o.contract && !o.quiet && o.carry && o.carry.columns)
+      console.log(C.dim + '  Carrying forward ' + Object.keys(o.carry.columns).length +
+        ' declared column rule(s) from ' + path.basename(o.contract) + C.off);
+
     var c = core.buildContract(p, {
       source: path.basename(file), tolerance: o.tolerance, rowTolerance: o.rowTolerance,
-      strictColumns: o.strictColumns, declared: collectDeclared(o)
+      strictColumns: o.strictColumns, declared: declaredSoFar
     });
     out(o, JSON.stringify(c, null, 2));
     if (o.out && !o.quiet) {
@@ -321,7 +416,9 @@ function cmdContract(o) {
         c.columns.filter(function (x) { return x.required; }).length + ' required · ' +
         c.columns.filter(function (x) { return x.unique; }).length + ' unique · ' +
         c.columns.filter(function (x) { return x.pii; }).length + ' personal data · ' +
-        c.columns.filter(function (x) { return x.declared; }).length + ' with declared rules' + C.off);
+        c.columns.filter(function (x) { return x.declared; }).length + ' with declared rules' +
+        (c.rules.unique_together && c.rules.unique_together.length
+          ? ' · ' + c.rules.unique_together.length + ' composite key(s)' : '') + C.off);
     }
   });
 }
@@ -339,6 +436,8 @@ function cmdCheck(o, silentFinish) {
   var contract = loadContract(o.contract);
   var files = resolveFiles(o._);
   var all = [];
+  o.compositeKeys = (contract.rules && contract.rules.unique_together) || [];
+  o.conditionalRules = (contract.rules && contract.rules.conditional) || [];
 
   profileEach(files, o, function (f, e, p, next) {
     if (e) {
@@ -346,7 +445,15 @@ function cmdCheck(o, silentFinish) {
         { severity: 'critical', code: 'unreadable', message: e.message, origin: 'inferred' }] });
       return next();
     }
+    // Merge CLI-specified gates into the contract (CLI wins over contract)
+    var cliGates = (o.declared && o.declared.rules && o.declared.rules.gates) || {};
+    if (Object.keys(cliGates).length) {
+      contract.rules = contract.rules || {};
+      contract.rules.gates = contract.rules.gates || {};
+      Object.keys(cliGates).forEach(function (k) { contract.rules.gates[k] = cliGates[k]; });
+    }
     var v = core.checkContract(contract, p);
+    var rec_score = null;
 
     if (o.maxAge && p.mtime) {
       var ms = pipe.parseDuration(o.maxAge);
@@ -358,11 +465,47 @@ function cmdCheck(o, silentFinish) {
       });
     }
 
+    // Row-count deviation against rolling history
+    var rowDevTol = o.rowDeviation || (contract.rules && contract.rules.row_deviation_pct);
+    if (rowDevTol && o.track) {
+      var hist = pipe.loadHistory(o.track);
+      var devV = pipe.checkRowDeviation(p.rows, hist, rowDevTol);
+      if (devV) v.push(devV);
+    }
+
+    // SLA check
+    var slaSpec = o.sla || (contract.rules && contract.rules.sla);
+    if (slaSpec && p.mtime) {
+      var slaV = pipe.checkSLA(p.mtime, slaSpec);
+      if (slaV) v.push(slaV);
+    }
+
+    // No-regression gate — score must be >= last passing run's score
+    var noReg = o.noRegression || (contract.rules && contract.rules.no_regression);
+    if (noReg && o.track) {
+      var list = core.issues(p), sc = core.score(list);
+      var regV = pipe.checkRegression(sc, pipe.loadHistory(o.track));
+      if (regV) v.push(regV);
+      rec_score = sc; // save for history
+    }
+
     var threshold = o.failOn === 'none' ? 99 : SEV_RANK[o.failOn];
     if (threshold === undefined) die('Bad --fail-on value.');
     var breached = v.filter(function (x) { return SEV_RANK[x.severity] >= threshold; });
     var rec = { file: f, passed: breached.length === 0, violations: v,
                 breached: breached.length, rows: p.rows, columns: p.cols.length };
+
+    // Append to history AFTER the pass/fail decision, so this run's
+    // count doesn't contaminate its own baseline
+    if (o.track) {
+      pipe.appendHistory(o.track, {
+        date: new Date().toISOString().slice(0, 10),
+        file: path.basename(f),
+        rows: p.rows,
+        passed: rec.passed,
+        score: rec_score
+      });
+    }
 
     if (o.quarantine || o.passOut) {
       splitRows(f, o, contract, function (err, counts) {
@@ -396,6 +539,7 @@ function finishCheck(o, all, silentFinish) {
         r.violations.forEach(function (x) {
           var c = x.severity === 'critical' ? C.red : x.severity === 'warning' ? C.yel : C.blu;
           var tag = x.origin === 'declared' ? C.dim + ' [declared rule]' + C.off : '';
+          if (x.gated) tag += C.dim + ' [gated]' + C.off;
           console.log('  ' + c + pad(x.severity, 9) + C.off + ' ' + x.message + tag);
         });
         console.log('');
@@ -414,9 +558,18 @@ function finishCheck(o, all, silentFinish) {
   }
 
   var code = (passed || o.exitZero) ? 0 : 1;
-  if (o.webhook && !passed) {
-    postWebhook(o.webhook, { contract: path.basename(o.contract), passed: passed, files: all },
-      function () { silentFinish ? silentFinish(code, all) : process.exit(code); });
+  if (o.webhook) {
+    var alertThreshold = SEV_RANK[o.alertOn || o.failOn];
+    var alertHit = alertThreshold === undefined ? !passed : all.some(function (r) {
+      return r.violations.some(function (v) { return SEV_RANK[v.severity] >= alertThreshold; });
+    });
+    if (alertHit || (passed && o.alertAlways)) {
+      postWebhook(o.webhook, {
+        contract: path.basename(o.contract), passed: passed, alerted: alertHit,
+        files: all
+      }, o, function () { silentFinish ? silentFinish(code, all) : process.exit(code); });
+    } else if (silentFinish) silentFinish(code, all);
+    else process.exit(code);
   } else if (silentFinish) silentFinish(code, all);
   else process.exit(code);
 }
@@ -583,7 +736,14 @@ function cmdRun(o) {
     sub.maxAge = chk.maxAge;
     sub.quarantine = rel(chk.quarantine);
     sub.passOut = rel(chk.passOut);
+    sub.track = rel(chk.track || cfg.track);
+    sub.rowDeviation = chk.rowDeviation || cfg.rowDeviation;
+    sub.sla = chk.sla || cfg.sla;
+    sub.noRegression = chk.noRegression || chk.no_regression || cfg.noRegression || cfg.no_regression;
     sub.webhook = chk.webhook || cfg.webhook;
+    sub.webhookKey = chk.webhookKey || cfg.webhookKey;
+    sub.alertOn = chk.alertOn || cfg.alertOn;
+    sub.alertAlways = chk.alertAlways || cfg.alertAlways;
     sub.read = chk.read || {};
     sub.ignore = chk.ignore;
     sub.only = chk.only;
@@ -643,17 +803,65 @@ function markdown(all, passed) {
   return m;
 }
 
-function postWebhook(url, payload, done) {
+function postWebhook(url, payload, o, done) {
   if (typeof fetch !== 'function') { console.error('Webhooks need Node 18+.'); return done(); }
-  var text = payload.files.map(function (f) {
+  var key = o.webhookKey || process.env.SIFT_WEBHOOK_KEY || '';
+  var status = payload.passed ? 'PASS' : 'FAIL';
+  var summary = payload.files.map(function (f) {
     return (f.passed ? 'PASS' : 'FAIL') + ' ' + path.basename(f.file) +
       (f.violations && f.violations.length ? ' — ' + f.violations[0].message : '');
   }).join('\n');
-  var body = /hooks\.slack\.com|webhook\.office\.com/.test(url)
-    ? JSON.stringify({ text: 'Sift data check failed\n' + text })
-    : JSON.stringify(payload);
-  fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body })
-    .then(function () { done(); }, function (e) {
+  var title = 'Sift: ' + status + ' — ' + payload.contract;
+
+  var body, headers = { 'content-type': 'application/json' };
+
+  if (/hooks\.slack\.com/.test(url)) {
+    // Slack incoming webhook — structured blocks
+    body = JSON.stringify({
+      text: title,
+      blocks: [
+        { type: 'header', text: { type: 'plain_text', text: title } },
+        { type: 'section', text: { type: 'mrkdwn', text: '```\n' + summary + '\n```' } }
+      ]
+    });
+  } else if (/webhook\.office\.com|\.webhook\.office365\.com/.test(url)) {
+    // Microsoft Teams
+    body = JSON.stringify({
+      '@type': 'MessageCard', summary: title,
+      themeColor: payload.passed ? '2E7D6E' : '9B2C1E',
+      title: title, text: summary.replace(/\n/g, '<br/>')
+    });
+  } else if (/discord\.com\/api\/webhooks|discordapp\.com\/api\/webhooks/.test(url)) {
+    // Discord
+    body = JSON.stringify({
+      embeds: [{
+        title: title,
+        description: '```\n' + summary + '\n```',
+        color: payload.passed ? 0x2E7D6E : 0x9B2C1E
+      }]
+    });
+  } else if (/events\.pagerduty\.com/.test(url)) {
+    // PagerDuty Events API v2
+    body = JSON.stringify({
+      routing_key: key,
+      event_action: payload.passed ? 'resolve' : 'trigger',
+      payload: {
+        summary: title + '\n' + summary,
+        source: 'sift-data',
+        severity: payload.passed ? 'info' : 'critical',
+        custom_details: payload
+      }
+    });
+  } else {
+    // Generic — full JSON payload
+    body = JSON.stringify(payload);
+  }
+
+  fetch(url, { method: 'POST', headers: headers, body: body })
+    .then(function (r) {
+      if (!r.ok) console.error('Webhook returned HTTP ' + r.status);
+      done();
+    }, function (e) {
       console.error('Webhook failed: ' + e.message); done();
     });
 }
