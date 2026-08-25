@@ -1,6 +1,6 @@
 {
   "name": "sift-data",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Audit, clean and gate any spreadsheet — without uploading it anywhere.",
   "keywords": ["data-quality", "csv", "data-contracts", "pipeline", "etl", "cli", "pii"],
   "homepage": "https://piyushs-2004.github.io/sift/",
