@@ -710,6 +710,79 @@ function testNewCLIIntegration() {
   eq('CLI catches regression', regV.length, 1);
 }
 
+/* ---------------- dashboard ---------------- */
+function testDashboard() {
+  var dash = require(path.join(ROOT, 'lib', 'dashboard.js'));
+
+  // summarise tolerates an empty history
+  var empty = dash.summarise([]);
+  eq('empty history run count', empty.runs, 0);
+  eq('empty history verdict', dash.verdict(empty).tone, 'idle');
+
+  var runs = [
+    { date: '2026-01-01', file: 'a.csv', rows: 100, passed: true, score: 95,
+      critical: 0, warning: 0, info: 0, codes: [] },
+    { date: '2026-01-02', file: 'a.csv', rows: 98, passed: false, score: 70,
+      critical: 2, warning: 1, info: 0, codes: ['uniqueness_lost'] },
+    { date: '2026-01-03', file: 'a.csv', rows: 102, passed: false, score: 80,
+      critical: 1, warning: 0, info: 0, codes: ['null_in_required'] }
+  ];
+  var s = dash.summarise(runs);
+  eq('summarise counts runs', s.runs, 3);
+  eq('summarise pass rate', s.passRate, 33);
+  eq('summarise latest score', s.latestScore, 80);
+  eq('summarise score delta', s.scoreDelta, 10);
+  eq('summarise totals criticals', s.critical, 3);
+  ok('summarise sees severity data', s.hasSeverity === true);
+  eq('summarise failing streak', s.streak, 2);
+
+  var vd = dash.verdict(s);
+  eq('verdict tone on failure', vd.tone, 'bad');
+  ok('verdict names the streak', /2 runs in a row/.test(vd.sub), vd.sub);
+
+  // older histories carry no severity fields — those sections degrade, not crash
+  var legacy = dash.summarise([{ date: '2026-01-01', rows: 10, passed: true, score: 90 }]);
+  ok('legacy history has no severity', legacy.hasSeverity === false);
+  eq('legacy verdict tone', dash.verdict(legacy).tone, 'ok');
+
+  // html renders without leaking placeholder values
+  var html = dash.renderHTML([{ name: 'orders', path: 'h.json', runs: runs }], { live: false });
+  ok('renders a document', /^<!doctype html>/.test(html));
+  ok('renders charts', (html.match(/<svg /g) || []).length === 3);
+  ok('no NaN or undefined in output', !/NaN|undefined/.test(html));
+  ok('static export omits the poll loop', html.indexOf('setInterval') === -1);
+  ok('live page includes the poll loop',
+    dash.renderHTML([{ name: 'o', path: 'h.json', runs: runs }], { live: true })
+      .indexOf('setInterval') !== -1);
+
+  // a run's file name is escaped, not injected
+  var nasty = dash.renderHTML([{ name: 'x', path: 'h.json',
+    runs: [{ date: '2026-01-01', file: '<img src=x onerror=alert(1)>', rows: 1, passed: true }] }], {});
+  ok('escapes run values', nasty.indexOf('<img src=x') === -1);
+
+  // CLI: static export, and the errors when there is nothing to show
+  var hp = f('dashhist.json'), out = f('dash.html');
+  fs.writeFileSync(hp, JSON.stringify({ runs: runs }));
+  var r = sift(['dashboard', hp, '-o', out]);
+  eq('dashboard export exits 0', r.code, 0);
+  ok('dashboard writes the file', fs.existsSync(out));
+  ok('exported file has the verdict', /Latest check failed/.test(fs.readFileSync(out, 'utf8')));
+
+  var missing = sift(['dashboard', f('nope-history.json'), '-o', f('x.html')]);
+  eq('dashboard errors on missing history', missing.code, 2);
+
+  // check --track records severity and score for the dashboard to chart
+  var cpath = f('dashcontract.json'), hpath = f('dashtrack.json');
+  sift(['contract', f('good.csv'), '-o', cpath, '-q']);
+  sift(['check', f('good.csv'), '-c', cpath, '--track', hpath, '-q']);
+  sift(['check', f('bad.csv'), '-c', cpath, '--track', hpath, '-q', '--exit-zero']);
+  var tracked = JSON.parse(fs.readFileSync(hpath, 'utf8')).runs;
+  ok('track records a score without --no-regression', tracked[0].score != null);
+  ok('track records a timestamp', /^\d{4}-\d{2}-\d{2}T/.test(tracked[0].ts || ''));
+  ok('track records severity counts', typeof tracked[1].critical === 'number');
+  ok('track records which checks fired', Array.isArray(tracked[1].codes) && tracked[1].codes.length > 0);
+}
+
 /* ---------------- unit: gates (per-check severity override) ---------------- */
 function testGates() {
   // set up a contract and a bad file
@@ -790,6 +863,7 @@ testConditionalRules();
 testNoRegression();
 testNewCLIIntegration();
 testGates();
+testDashboard();
 testStreamingParity(function () {
   testCompositeStreaming(function () {
     console.log('\n');

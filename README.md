@@ -87,6 +87,19 @@ sift check orders.csv -c contracts/orders.json \
 The quarantine file carries `_sift_row` and `_sift_errors` so whoever owns the source knows
 exactly what to fix, while your pipeline loads the clean rows and carries on.
 
+## Watch it over time
+
+Every check can log its result, and that log renders as a page:
+
+```bash
+sift check today.csv -c contracts/orders.json --track history/orders.json
+sift dashboard history/orders.json              # live, repaints as runs land
+sift dashboard history/orders.json -o report.html   # standalone file to send on
+```
+
+Quality score and row count over time, violations by severity, and the run log — opening
+with a plain-language verdict for whoever owns the data rather than the pipeline.
+
 ## Built for real files
 
 Streaming parser, so memory stays flat regardless of size — a 180 MB / 2M-row file profiles

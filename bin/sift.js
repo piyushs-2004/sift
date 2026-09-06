@@ -6,6 +6,7 @@ var path = require('path');
 var core = require('../lib/core.js');
 var reader = require('../lib/reader.js');
 var pipe = require('../lib/pipeline.js');
+var dash = require('../lib/dashboard.js');
 
 var C = process.stdout.isTTY && !process.env.NO_COLOR ? {
   dim: '\x1b[2m', red: '\x1b[31m', yel: '\x1b[33m', blu: '\x1b[34m',
@@ -13,7 +14,7 @@ var C = process.stdout.isTTY && !process.env.NO_COLOR ? {
 } : { dim: '', red: '', yel: '', blu: '', grn: '', bold: '', off: '' };
 
 var SEV_RANK = { info: 0, warning: 1, critical: 2 };
-var VERSION = '0.2.0';
+var VERSION = require('../package.json').version;
 
 function usage(code) {
   console.log(`
@@ -25,6 +26,7 @@ sift ${VERSION} — data quality gate for pipelines
   ${C.bold}sift diff${C.off} <old> <new>                  Compare two files directly, no contract
   ${C.bold}sift run${C.off} [-C sift.config.json]         Run every check defined in a config file
   ${C.bold}sift init${C.off}                              Write a starter sift.config.json
+  ${C.bold}sift dashboard${C.off} <history.json...>       Visualise tracked history in a browser
 
 Files may be globs ("data/*.csv", "exports/**/*.csv.gz") and may be .csv .tsv
 .json .ndjson, optionally .gz. Use - to read CSV from stdin.
@@ -89,6 +91,10 @@ Enforcement
       --alert-on <sev>    Severity that triggers the webhook (default: --fail-on)
       --alert-always      Also send a heartbeat ping when everything passes
       --exit-zero         Always exit 0; report only
+
+Dashboard
+      --port <n>          Port for the live dashboard (default 7777)
+  -o, --out <path>        Write a standalone HTML file instead of serving
 
 Output
   -o, --out <path>        Write output to a file
@@ -222,6 +228,7 @@ function args(argv) {
       }
     }
     else if (a === '-q' || a === '--quiet') o.quiet = true;
+    else if (a === '--port') o.port = +argv[++i];
     else if (a === '--no-color') { Object.keys(C).forEach(function (k) { C[k] = ''; }); }
     else if (a[0] === '-' && a !== '-') { console.error('Unknown option: ' + a); process.exit(2); }
     else o._.push(a);
@@ -480,13 +487,15 @@ function cmdCheck(o, silentFinish) {
       if (slaV) v.push(slaV);
     }
 
-    // No-regression gate — score must be >= last passing run's score
+    // Quality score — computed whenever we're tracking, not just when the
+    // regression gate is on, so the recorded history is chartable either way
     var noReg = o.noRegression || (contract.rules && contract.rules.no_regression);
-    if (noReg && o.track) {
-      var list = core.issues(p), sc = core.score(list);
-      var regV = pipe.checkRegression(sc, pipe.loadHistory(o.track));
-      if (regV) v.push(regV);
-      rec_score = sc; // save for history
+    if (o.track) {
+      rec_score = core.score(core.issues(p));
+      if (noReg) {
+        var regV = pipe.checkRegression(rec_score, pipe.loadHistory(o.track));
+        if (regV) v.push(regV);
+      }
     }
 
     var threshold = o.failOn === 'none' ? 99 : SEV_RANK[o.failOn];
@@ -498,12 +507,23 @@ function cmdCheck(o, silentFinish) {
     // Append to history AFTER the pass/fail decision, so this run's
     // count doesn't contaminate its own baseline
     if (o.track) {
+      var now = new Date().toISOString();
+      var counts = { critical: 0, warning: 0, info: 0 }, codes = {};
+      v.forEach(function (x) {
+        if (counts[x.severity] !== undefined) counts[x.severity]++;
+        if (x.code) codes[x.code] = 1;
+      });
       pipe.appendHistory(o.track, {
-        date: new Date().toISOString().slice(0, 10),
+        date: now.slice(0, 10),
+        ts: now,
         file: path.basename(f),
         rows: p.rows,
         passed: rec.passed,
-        score: rec_score
+        score: rec_score,
+        critical: counts.critical,
+        warning: counts.warning,
+        info: counts.info,
+        codes: Object.keys(codes)
       });
     }
 
@@ -866,6 +886,73 @@ function postWebhook(url, payload, o, done) {
     });
 }
 
+/* ================= dashboard ================= */
+
+/**
+ * Visualise tracked history. Two modes, because two audiences:
+ *   -o out.html  writes a standalone file to email or publish as a CI artifact
+ *   (default)    serves it locally and repaints when a new run lands
+ */
+function cmdDashboard(o) {
+  var paths = o._.slice();
+  if (o.track) paths.unshift(o.track);
+  if (!paths.length) {
+    // fall back to whatever the config tracks, so `sift dashboard` alone works
+    try {
+      var cfg = JSON.parse(fs.readFileSync(o.config || 'sift.config.json', 'utf8'));
+      (cfg.checks || []).forEach(function (c) { if (c.track) paths.push(c.track); });
+    } catch (e) { /* no config — handled below */ }
+  }
+  if (!paths.length) {
+    die('Nothing to show. Pass a history file:\n' +
+        '  sift dashboard history/orders.json\n' +
+        'History is written by check runs using --track.');
+  }
+
+  var missing = paths.filter(function (p) { return !fs.existsSync(p); });
+  if (missing.length === paths.length) {
+    die('No history files found: ' + missing.join(', ') + '\n' +
+        'Record some first:  sift check data.csv -c contract.json --track ' + paths[0]);
+  }
+
+  function datasets() { return paths.map(dash.loadDataset); }
+
+  if (o.out) {
+    ensureDir(o.out);
+    fs.writeFileSync(o.out, dash.renderHTML(datasets(), { live: false }));
+    console.log('Wrote ' + o.out);
+    console.log(C.dim + '  Self-contained — open it anywhere, no server needed.' + C.off);
+    return;
+  }
+
+  var port = o.port || 7777;
+  var http = require('http');
+  var server = http.createServer(function (req, res) {
+    var url = String(req.url || '/').split('?')[0];
+    if (url === '/data.json') {
+      // the page diffs this against what it was served with, and reloads on change
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(datasets()));
+      return;
+    }
+    if (url !== '/') { res.writeHead(404); res.end('Not found'); return; }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(dash.renderHTML(datasets(), { live: true }));
+  });
+
+  server.on('error', function (e) {
+    die(e.code === 'EADDRINUSE'
+      ? 'Port ' + port + ' is already in use. Pick another with --port.'
+      : 'Server error: ' + e.message);
+  });
+
+  server.listen(port, '127.0.0.1', function () {
+    console.log('Sift dashboard  ' + C.bold + 'http://127.0.0.1:' + port + C.off);
+    console.log(C.dim + '  Watching ' + paths.length + ' history file' +
+      (paths.length === 1 ? '' : 's') + ' · updates as new runs land · Ctrl-C to stop' + C.off);
+  });
+}
+
 /* ================= helpers ================= */
 function ensureDir(p) {
   var dir = path.dirname(p);
@@ -905,6 +992,7 @@ else if (cmd === 'check') cmdCheck(o);
 else if (cmd === 'diff') cmdDiff(o);
 else if (cmd === 'run') cmdRun(o);
 else if (cmd === 'init') cmdInit(o);
+else if (cmd === 'dashboard') cmdDashboard(o);
 else if (cmd === '-h' || cmd === '--help') usage(0);
 else if (cmd === '-v' || cmd === '--version') { console.log(VERSION); process.exit(0); }
 else { console.error('Unknown command: ' + cmd); usage(2); }

@@ -27,6 +27,7 @@ sift check today.csv -c contracts/orders.json     # enforce; exits 1 on breach
 sift diff yesterday.csv today.csv                 # drift, no contract needed
 sift init                                         # scaffold sift.config.json
 sift run                                          # every check in the config
+sift dashboard history/orders.json                # see the history in a browser
 ```
 
 The contract is plain JSON you commit and review in pull requests like any other code.
@@ -102,6 +103,33 @@ that's slightly worse every day, but never bad enough to trip any one rule, stil
 
 Both need a few runs of history before they have anything to compare against; with fewer
 than 3 tracked runs `--row-deviation` is a no-op.
+
+## Dashboard
+
+Everything `--track` records can be read as a page rather than a JSON file:
+
+```bash
+sift dashboard history/orders.json              # serve it, live
+sift dashboard history/*.json --port 8080       # several datasets at once
+sift dashboard history/orders.json -o report.html   # standalone file
+```
+
+The served page repaints when a new run lands, so it's something to leave open on a second
+monitor during a backfill. `-o` writes a self-contained HTML file instead — no server, no
+network, nothing to install — which is the version to email to whoever owns the data, or
+publish as a CI artifact.
+
+It opens with a plain-language verdict ("Latest check failed — 3 critical issues. Failing
+for 2 runs in a row.") for people who won't read a violation table, then the quality score
+and row count over time, violations by severity per run, and the run log underneath for
+whoever has to find the run that broke it.
+
+With no arguments it reads the `track` paths out of `sift.config.json`, so a project that
+already runs `sift run` gets a dashboard for free.
+
+Each tracked run records the date, row count, quality score, pass/fail, a count of
+violations per severity, and which checks fired. History from before this was added still
+charts — the severity panel just stays empty until new runs land.
 
 ## Business rules
 
@@ -518,6 +546,7 @@ check:
     --row-deviation <%> Fail if row count strays from the rolling average (needs --track)
     --no-regression     Fail if quality score dropped vs. last pass (needs --track)
     --gate <overrides>  Remap or silence a check code, e.g. "sla_breach=info"
+    --port <n>          Port for `sift dashboard` (default: 7777)
 -q, --quiet             Print only on failure
 ```
 
