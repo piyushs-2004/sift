@@ -1,4 +1,4 @@
-name: 'Sift'
+name: 'sift-data'
 description: 'Data quality gate for pipelines — profile or check files against a contract.'
 author: 'piyushs-2004'
 

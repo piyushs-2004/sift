@@ -1,4 +1,4 @@
-# Sift
+# sift-data
 
 **Audit, clean and gate any spreadsheet — without uploading it anywhere.**
 
@@ -25,7 +25,7 @@ a number into `"INR 420.00"` — and the pipeline runs green. The dashboard quie
 the wrong number, nobody notices for three weeks, and by then someone has made a decision
 on it.
 
-Sift turns that into a build failure.
+sift-data turns that into a build failure.
 
 ## 60 seconds
 
@@ -50,7 +50,7 @@ Or open the [web app](https://piyushs-2004.github.io/sift/) and drag a file in �
 
 ## Contracts you actually control
 
-Sift infers a first draft from your file. **That's a draft, not a decision** — evidence tells
+sift-data infers a first draft from your file. **That's a draft, not a decision** — evidence tells
 you what *was* true, not what *matters*. A column that happened to be complete on a good day
 shouldn't be pinned forever, and a critical join key with one stray null shouldn't be waved
 through.
@@ -66,7 +66,7 @@ sift contract orders.csv \
   -o contracts/orders.json
 ```
 
-Failures are tagged by origin, so you can tell a rule a human chose from one Sift guessed:
+Failures are tagged by origin, so you can tell a rule a human chose from one sift-data guessed:
 
 ```
 critical  Column "order_id" is no longer unique — 110 repeated value(s). [declared rule]
@@ -113,7 +113,7 @@ Zero runtime dependencies. Node 16+.
 
 For profiling a Snowflake or BigQuery table in place, use
 [Great Expectations](https://greatexpectations.io) or [Soda](https://www.soda.io) — they're
-better at it and better resourced. Sift is for the moment data arrives as a *file*, which is
+better at it and better resourced. sift-data is for the moment data arrives as a *file*, which is
 still how a great deal of it arrives.
 
 PII matching is pattern-based: it catches structured identifiers and will miss names and
@@ -124,7 +124,7 @@ free-text notes. First pass, not a compliance review.
 ```bash
 git clone https://github.com/piyushs-2004/sift.git
 cd sift
-npm test          # 182 tests, no framework, no dependencies
+npm test          # 209 tests, no framework, no dependencies
 node bin/sift.js --help
 ```
 

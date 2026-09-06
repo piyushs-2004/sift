@@ -1,4 +1,4 @@
-# sift
+# sift-data
 
 A data quality gate for pipelines. Profile a file, freeze what "good" looks like into a
 contract, then fail the build when a future file breaks it.
@@ -9,6 +9,10 @@ Zero dependencies. One Node file. Nothing is sent anywhere.
 npx sift-data profile orders.csv
 ```
 
+Installing puts two identical commands on your PATH: `sift-data` and the shorter `sift`.
+The examples below use `sift`; use `sift-data` if you already have something else named
+`sift` installed.
+
 ## The problem it solves
 
 Bad data doesn't throw an exception. An upstream team renames a column, changes a currency
@@ -16,7 +20,7 @@ field from a number to `"INR 420.00"`, or an export silently truncates — and y
 runs green while the dashboard quietly reports the wrong number. Nobody notices for three
 weeks, and by then someone has made a decision on it.
 
-Sift turns that into a build failure.
+sift-data turns that into a build failure.
 
 ## Commands
 
@@ -269,7 +273,7 @@ security surface.
 
 ## Choosing which columns may never be null
 
-By default Sift infers: a column with zero nulls in your sample becomes `required`.
+By default sift-data infers: a column with zero nulls in your sample becomes `required`.
 **That is a draft, not a decision.** Evidence tells you what *was* true; it can't tell
 you what *matters*. A column that happened to be complete on a good day gets pinned and
 fires false alarms forever; a critical join key with one stray null gets marked optional
@@ -298,7 +302,7 @@ sift contract orders.csv \
 sift contract orders.csv --emit-rules sift.rules.json
 ```
 
-Every knob comes out as `"infer"`, with a note showing what Sift saw:
+Every knob comes out as `"infer"`, with a note showing what sift-data saw:
 
 ```json
 {
@@ -377,7 +381,7 @@ doesn't quietly disappear from the contract along with its rule.
 ### Reading the output
 
 Violations are tagged by origin, so you know whether a failure broke a rule a human chose
-or one Sift guessed:
+or one sift-data guessed:
 
 ```
 critical  Column "order_id" is no longer unique — 110 repeated value(s). [declared rule]
@@ -618,7 +622,7 @@ for (const row of myStream) {
 - **PII matching is pattern-based.** It catches emails, phone numbers, card numbers and
   ID formats. It will miss names and free-text notes, and it can false-positive on order
   IDs. It is a first pass, not a compliance review.
-- **Files, not warehouses.** Sift reads files. For profiling a Snowflake or BigQuery table
+- **Files, not warehouses.** sift-data reads files. For profiling a Snowflake or BigQuery table
   in place, use Great Expectations or Soda — this is the tool for the moment data arrives as
   a file, which is still how a great deal of it arrives.
 - **Uniqueness uses 53-bit hashes.** A collision can only under-report uniqueness, never
@@ -626,7 +630,7 @@ for (const row of myStream) {
   as unknown rather than guessing.
 
 If you need warehouse-native profiling with a full expectation suite, use Great Expectations.
-Sift is for the case where a file lands, something is wrong with it, and you want to know
+sift-data is for the case where a file lands, something is wrong with it, and you want to know
 before it becomes someone's quarterly number.
 
 ## Web version
